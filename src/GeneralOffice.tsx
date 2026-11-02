@@ -1,0 +1,43 @@
+import { useEffect, useRef, useState } from 'react'
+import { Canvas } from '@react-three/fiber'
+import { OrbitControls, Html } from '@react-three/drei'
+import { Box } from './components/furniture/Primitives'
+import { Chair, Desk, Plant } from './components/furniture/Furniture'
+import './general.css'
+type Config={characters:string;sector:string;objective:string}
+type Task={id:string;request:string;config:Config;status:string;result:string;messages:{role:string;content:string}[];updatedAt:string}
+const roles=['Coordinación','Análisis','Ejecución','Revisión']
+function readConfig():Config {try{return JSON.parse(localStorage.getItem('generalOffice.config.v1')||'null')||{characters:'',sector:'',objective:''}}catch{return {characters:'',sector:'',objective:''}}}
+function Person({type,color}:{type:string;color:string}){
+ const human=type==='Personas',cat=type==='Gatos'
+ return <group position={[0,.6,-.6]}>
+ <mesh position={[0,.45,0]}><cylinderGeometry args={[.23,.3,.65,16]}/><meshStandardMaterial color={color}/></mesh>
+ <mesh position={[0,1,0]}><sphereGeometry args={[.3,20,16]}/><meshStandardMaterial color={human?'#dbab88':'#c6a17a'}/></mesh>
+ {!human&&[-1,1].map(side=><mesh key={side} position={[side*.22,cat?1.28:1.02,0]} rotation={[0,0,cat?side*-.2:side*.3]}><coneGeometry args={[cat?.13:.18,cat?.28:.5,cat?3:16]}/><meshStandardMaterial color="#9d785a"/></mesh>)}
+ {[-1,1].map(side=><mesh key={side} position={[side*.11,1.04,.265]}><sphereGeometry args={[.035,8,8]}/><meshStandardMaterial color="#263c39"/></mesh>)}
+ </group>
+}
+function Scene({config,stage}:{config:Config;stage:number}){
+ return <Canvas orthographic camera={{position:[12,11,15],zoom:48}}><ambientLight intensity={1.4}/><directionalLight position={[4,10,6]} intensity={2}/><group>
+ <Box size={[10,.2,8]} position={[0,-.15,0]} color="#c5ac8c"/><Box size={[10,3.7,.15]} position={[0,1.7,-4]} color="#e2e6da"/>
+ <Html position={[0,2.8,-3.8]} center><div className="room-label">{config.sector}</div></Html>
+ {roles.map((role,i)=><group key={role} position={[(i%2)*4-2,0,Math.floor(i/2)*3-1.6]}><Chair position={[0,.08,-.9]}/><Desk position={[0,0,0]}/><Person type={config.characters} color={stage===i?'#d4a450':'#466d67'}/><Html position={[0,2,-.6]} center><span className={stage===i?'agent-label active':'agent-label'}>{role}{stage===i?' · Trabajando':''}</span></Html></group>)}
+ <Plant position={[-4,0,-3]} scale={1.4}/><Plant position={[4,0,-3]} scale={1.4}/></group><OrbitControls enablePan={false} minZoom={25} maxZoom={90} maxPolarAngle={Math.PI/2.6}/></Canvas>
+}
+export default function GeneralOffice(){
+ const [config,setConfig]=useState<Config>(readConfig),[editing,setEditing]=useState(()=>!readConfig().sector),[animal,setAnimal]=useState(''),[tasks,setTasks]=useState<Task[]>([]),[request,setRequest]=useState(''),[messages,setMessages]=useState<string[]>([]),[stage,setStage]=useState(-1),[busy,setBusy]=useState(false),[error,setError]=useState(''),[selected,setSelected]=useState<Task|null>(null)
+ const controller=useRef<AbortController|null>(null)
+ async function refresh(){try{const r=await fetch('/api/work');if(!r.ok)throw Error('No se pudo cargar el historial');setTasks(await r.json())}catch(e){setError(String(e))}}
+ useEffect(()=>{const timer=window.setTimeout(()=>void refresh(),0);return()=>{window.clearTimeout(timer);controller.current?.abort()}},[])
+ function configure(e:React.FormEvent){e.preventDefault();const next={...config,characters:!['Personas','Gatos',''].includes(config.characters)?(animal.trim()||(config.characters==='Otro animal'?'':config.characters)):config.characters};if(!next.characters||!next.sector.trim()||!next.objective.trim()){setError('Completa personajes, giro y objetivo.');return}try{localStorage.setItem('generalOffice.config.v1',JSON.stringify(next));setConfig(next);setEditing(false);setError('')}catch{setError('No se pudo guardar la configuración en este navegador.')}}
+ async function run(e:React.FormEvent){e.preventDefault();if(busy||!request.trim())return;setBusy(true);setError('');setMessages([]);setSelected(null);controller.current=new AbortController()
+ try{const r=await fetch('/api/work',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({request,config}),signal:controller.current.signal});if(!r.ok||!r.body)throw Error('No se pudo iniciar la tarea');const reader=r.body.getReader(),decoder=new TextDecoder();let buffer='';while(true){const {value,done}=await reader.read();buffer+=decoder.decode(value,{stream:!done});const lines=buffer.split('\n');buffer=lines.pop()||'';for(const line of lines){if(!line.trim())continue;const event=JSON.parse(line);if(event.type==='stage')setStage(event.step);if(event.type==='message')setMessages(m=>[...m,`${event.agent}\n${event.content}`]);if(event.type==='done')setSelected(event.task);if(event.type==='error')throw Error(event.message)}if(done)break}}
+ catch(e){setError(e instanceof Error&&e.name==='AbortError'?'Tarea cancelada. Puedes retomarla desde el historial.':String(e))}finally{setBusy(false);setStage(-1);void refresh()}}
+ function download(task:Task){const url=URL.createObjectURL(new Blob([task.result],{type:'text/plain;charset=utf-8'}));const link=document.createElement('a');link.href=url;link.download=`trabajo-${task.id}.txt`;link.click();URL.revokeObjectURL(url)}
+ return <main className="general-office"><header><div><small>OFICINA VIRTUAL</small><h1>{config.sector||'Tu próxima oficina'}</h1><p>{config.objective||'Elige tus personajes y define qué quieres lograr.'}</p></div><button disabled={busy} onClick={()=>setEditing(true)}>Configurar oficina</button></header>
+ {error&&<p role="alert" className="error">{error}</p>}
+ {editing?<form onSubmit={configure} className="setup"><h2>Diseña tu equipo</h2><label>Personajes<select required value={['Personas','Gatos','Otro animal',''].includes(config.characters)?config.characters:'Otro animal'} onChange={e=>setConfig({...config,characters:e.target.value})}><option value="">Elige una opción</option><option>Personas</option><option>Gatos</option><option>Otro animal</option></select></label>{(!['Personas','Gatos',''].includes(config.characters))&&<label>¿Qué animal?<input required maxLength={100} value={animal|| (config.characters==='Otro animal'?'':config.characters)} onChange={e=>setAnimal(e.target.value)}/><small>Se representará con una figura animal estilizada.</small></label>}<label>Giro de la oficina<input required maxLength={1000} list="sectors" value={config.sector} placeholder="Escribe tu giro o elige una sugerencia" onChange={e=>setConfig({...config,sector:e.target.value})}/><datalist id="sectors">{['Administración','Diseño','Desarrollo','Atención al cliente','Educación'].map(s=><option key={s} value={s}/>)}</datalist></label><label>Objetivo<textarea required maxLength={1000} value={config.objective} onChange={e=>setConfig({...config,objective:e.target.value})}/></label><button>Guardar y abrir oficina</button></form>:<>
+ <section className="general-scene" aria-label="Oficina 3D"><Scene config={config} stage={stage}/></section><p className="hint">Arrastra para rotar y usa la rueda para acercar · Personajes: {config.characters}</p>
+ <div className="general-columns"><section><h2>Trabaja con el equipo</h2><form onSubmit={run}><label>¿Qué necesitas?<textarea required maxLength={12000} disabled={busy} value={request} onChange={e=>setRequest(e.target.value)} placeholder="Describe una tarea, comparte contexto y pide el resultado que necesitas."/></label><button disabled={busy}>{busy?'Trabajando…':'Iniciar tarea'}</button>{busy&&<button type="button" onClick={()=>controller.current?.abort()}>Cancelar</button>}</form><p className="hint">IA local con Ollama. El equipo redacta y analiza; las acciones externas requieren herramientas adicionales.</p>{messages.map((m,i)=><pre key={i}>{m}</pre>)}</section><section><h2>Trabajos guardados</h2><button onClick={()=>void refresh()}>Actualizar</button>{tasks.length===0&&<p>Aquí aparecerán tus solicitudes y resultados.</p>}{tasks.map(t=><button className="task" key={t.id} onClick={()=>setSelected(t)}>{t.request.slice(0,90)}<small>{({ready:'Completado',running:'En proceso',interrupted:'Interrumpido',error:'Error'} as Record<string,string>)[t.status]||t.status}</small></button>)}{selected&&<article><h3>{selected.request}</h3><pre>{selected.result||'Todavía no hay resultado.'}</pre><button disabled={busy} onClick={()=>{setRequest(selected.request);setMessages(selected.messages.map(m=>m.content));setSelected(null)}}>Retomar solicitud</button>{selected.result&&<button onClick={()=>download(selected)}>Descargar resultado</button>}</article>}</section></div></>}
+ </main>
+}
